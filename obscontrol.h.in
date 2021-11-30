@@ -1,0 +1,2 @@
+// the configured options and settings for locjup
+#define OBSCONTROL_VERSION "@obscontrol_VERSION@"
