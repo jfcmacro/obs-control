@@ -22,7 +22,7 @@
 #define PORT_2 "4900"
 #define PASS_2 "1234abcd"
 #define HOSTNAME_2 "localhost"
-#define WAIT_TIME 20
+#define WAIT_TIME 6
 
 typedef websocketpp::client<websocketpp::config::asio_client> client;
 
@@ -94,7 +94,7 @@ sendSimpleRequest(client* c,
 struct OBSConnection {
   client c;
   pid_t child;
-  std::thread* thr;
+  std::thread *pThr;
   websocketpp::connection_hdl hdl;
   std::string port;
   std::string pass;
@@ -112,11 +112,13 @@ struct OBSConnection {
     pass(pass),
     ipohost(ipohost),
     proto(proto),
-    debug(debug) { } // TODO Check local o remote
+    debug(debug) {
+    pThr = new std::thread([this]{ this->run(); });
+  }
 
-  void on_message(client* c,
-		  websocketpp::connection_hdl hdl,
-		  message_ptr msg) {
+  static void on_message(OBSConnection* obscon, client* c,
+			 websocketpp::connection_hdl hdl,
+			 message_ptr msg) {
 
     std::cout << "[obscontrol] " << msg->get_payload() << std::endl;
 
@@ -148,7 +150,7 @@ struct OBSConnection {
 	  // std::string password();
 
 	  QString passwordAndSalt = "";
-	  passwordAndSalt += QString::fromStdString(pass);
+	  passwordAndSalt += QString::fromStdString(obscon->pass);
 	  passwordAndSalt += QString::fromStdString(salt);
 
 	  auto passwordAndSaltHash = QCryptographicHash::hash(passwordAndSalt.toUtf8(),
@@ -209,21 +211,116 @@ struct OBSConnection {
     }
   }
 
-  void on_open(websocketpp::connection_hdl hdl) {
-    this->hdl = hdl;
+  static void on_open(OBSConnection* obscon, websocketpp::connection_hdl hdl) {
+    obscon->hdl = hdl;
   }
 
+  void join() {
+    pThr->join();
+  }
+
+private:
   std::string getURI() const {
     std::string ret { proto + ":" + "//" + ipohost + ":" + port };
     return ret;
+  }
+
+  void run() {
+    // int pobsout[2];
+    // int pobserr[2];
+    // ::pipe(pobsout);
+    // ::pipe(pobserr);
+
+    // int fdout = ::open("/dev/null", O_WRONLY);
+    // int fderr = ::open("/dev/null", O_WRONLY);
+
+    // std::string port_1 { PORT_1 };
+    // std::string pass_1 { PASS_1 };
+    // OBSConnection *pObsCon = new OBSConnection(port, pass);
+
+    child = ::fork();
+
+    if (child == 0) {
+      // ::dup2(pobsout[STDOUT_FILENO], STDOUT_FILENO);
+      // ::dup2(fdout, pobsout[STDIN_FILENO]);
+      // ::dup2(pobserr[STDOUT_FILENO], STDERR_FILENO);
+      // ::dup2(fderr, pobserr[STDIN_FILENO]);
+      // ::close(pobsout[STDOUT_FILENO]);
+      // ::close(fdout);
+      // ::close(pobserr[STDOUT_FILENO]);
+      // ::close(fderr);
+
+      // TODO update parameters and creation of this
+      ::execlp("obs", "obs",
+	       "--scene", "Docente",
+	       "--profile", "Docente",
+	       "--websocket_port", port.c_str(),
+	       "--websocket_password", pass.c_str(),
+	       // "--websocket_debug", "false",
+	       "--multi", nullptr);
+      ::exit(100);
+    }
+
+    // ::close(fderr);
+    // ::close(fdout);
+    // ::close(pobsout[STDIN_FILENO]);
+    // ::close(pobsout[STDOUT_FILENO]);
+    // ::close(pobserr[STDIN_FILENO]);
+    // ::close(pobserr[STDOUT_FILENO]);
+
+    ::sleep(WAIT_TIME);
+
+    // client c;
+
+    // std::string port1 = PORT_1;
+    std::string uri = getURI(); // "ws://localhost:" + port1; // "ws://localhost:4888";
+    std::cout << "[obscontrol] " << uri << std::endl;
+    std::thread* watchThread;
+
+    try {
+      // Set logging to be pretty verbose (everything except message payloads)
+      c.set_access_channels(websocketpp::log::alevel::all);
+      c.clear_access_channels(websocketpp::log::alevel::frame_payload);
+      c.set_error_channels(websocketpp::log::elevel::all);
+
+      // Initialize ASIO
+      c.init_asio();
+
+      // Register our message handler
+      c.set_message_handler(bind(OBSConnection::on_message,this,&c,::_1,::_2));
+      c.set_open_handler(bind(OBSConnection::on_open,this,::_1));
+
+      websocketpp::lib::error_code ec;
+      client::connection_ptr con = c.get_connection(uri, ec);
+
+      if (ec) {
+	std::cout << "[obscontrol] could not create connection because: " << ec.message() << std::endl;
+	return;
+      }
+
+      // Note that connect here only requests a connection. No network messages are
+      // exchanged until the event loop starts running in the next line.
+      c.connect(con);
+
+      // Start the ASIO io_service run loop
+      // this will cause a single connection to be made to the server. c.run()
+      // will exit when this connection is closed.
+      std::cout << "[obscontrol] running..." << std::endl;
+      // std::cout << "Starting thread..." << std::endl;
+
+      // watchThread = new std::thread(watchInput, &c);
+      c.run();
+    } catch (websocketpp::exception const & e) {
+      std::cout << "Error connecting" << std::endl;
+      std::cout << "[obscontrol] " << e.what() << std::endl;
+    }
+
   }
 };
 
 void on_open(websocketpp::connection_hdl hdl) {
   global_hdl = hdl;
 }
-
-
 
 void on_message(client* c,
 		websocketpp::connection_hdl hdl,
@@ -363,96 +460,14 @@ void watchInput(client *c) {
 int
 main(int argc, char *argv[]) {
 
-  // int pobsout[2];
-  // int pobserr[2];
-  // ::pipe(pobsout);
-  // ::pipe(pobserr);
-
-  // int fdout = ::open("/dev/null", O_WRONLY);
-  // int fderr = ::open("/dev/null", O_WRONLY);
-
   std::string port_1 { PORT_1 };
   std::string pass_1 { PASS_1 };
   OBSConnection *pObsCon = new OBSConnection(port_1, pass_1);
 
-  pObsCon->child = ::fork();
-
-  if (pObsCon->child == 0) {
-    // ::dup2(pobsout[STDOUT_FILENO], STDOUT_FILENO);
-    // ::dup2(fdout, pobsout[STDIN_FILENO]);
-    // ::dup2(pobserr[STDOUT_FILENO], STDERR_FILENO);
-    // ::dup2(fderr, pobserr[STDIN_FILENO]);
-    // ::close(pobsout[STDOUT_FILENO]);
-    // ::close(fdout);
-    // ::close(pobserr[STDOUT_FILENO]);
-    // ::close(fderr);
-
-    // TODO update parameters and creation of this
-    ::execlp("obs", "obs",
-	     "--scene", "Docente",
-	     "--profile", "Docente",
-	     "--websocket_port", pObsCon->port.c_str(),
-	     "--websocket_password", pObsCon->pass.c_str(),
-	     // "--websocket_debug", "false",
-	     "--multi", nullptr);
-    ::exit(100);
-  }
-
-  // ::close(fderr);
-  // ::close(fdout);
-  // ::close(pobsout[STDIN_FILENO]);
-  // ::close(pobsout[STDOUT_FILENO]);
-  // ::close(pobserr[STDIN_FILENO]);
-  // ::close(pobserr[STDOUT_FILENO]);
-
-  ::sleep(WAIT_TIME);
-
-  // client c;
-
-  // std::string port1 = PORT_1;
-  std::string uri = pObsCon->getURI(); // "ws://localhost:" + port1; // "ws://localhost:4888";
-  std::cout << "[obscontrol] " << uri << std::endl;
-  std::thread* watchThread;
-
-  try {
-    // Set logging to be pretty verbose (everything except message payloads)
-    pObsCon->c.set_access_channels(websocketpp::log::alevel::all);
-    pObsCon->c.clear_access_channels(websocketpp::log::alevel::frame_payload);
-    pObsCon->c.set_error_channels(websocketpp::log::elevel::all);
-
-    // Initialize ASIO
-    pObsCon->c.init_asio();
-
-    // Register our message handler
-    pObsCon->c.set_message_handler(bind(&on_message,&pObsCon->c,::_1,::_2));
-    pObsCon->c.set_open_handler(bind(&on_open,::_1));
-
-    websocketpp::lib::error_code ec;
-    client::connection_ptr con = pObsCon->c.get_connection(uri, ec);
-
-    if (ec) {
-      std::cout << "[obscontrol] could not create connection because: " << ec.message() << std::endl;
-      return 0;
-    }
-
-    // Note that connect here only requests a connection. No network messages are
-    // exchanged until the event loop starts running in the next line.
-    pObsCon->c.connect(con);
-
-    // Start the ASIO io_service run loop
-    // this will cause a single connection to be made to the server. c.run()
-    // will exit when this connection is closed.
-    std::cout << "[obscontrol] running..." << std::endl;
-    // std::cout << "Starting thread..." << std::endl;
-
-    // watchThread = new std::thread(watchInput, &c);
-    pObsCon->c.run();
-  } catch (websocketpp::exception const & e) {
-    std::cout << "[obscontrol] " << e.what() << std::endl;
-  }
 
   int status;
 
+  pObsCon->join();
   ::waitpid(pObsCon->child, &status, 0);
   //watchThread->join();
 
