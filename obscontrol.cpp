@@ -18,8 +18,10 @@
 
 #define PORT_1 "4800"
 #define PASS_1 "abcd1234"
+#define HOSTNAME_1 "localhost"
 #define PORT_2 "4900"
 #define PASS_2 "1234abcd"
+#define HOSTNAME_2 "localhost"
 #define WAIT_TIME 10
 
 typedef websocketpp::client<websocketpp::config::asio_client> client;
@@ -37,7 +39,63 @@ void on_open(websocketpp::connection_hdl hdl) {
   global_hdl = hdl;
 }
 
-void on_message(client* c, websocketpp::connection_hdl hdl, message_ptr msg) {
+bool
+sendSimpleRequest(client* c,
+		  websocketpp::connection_hdl hdl,
+		  std::string& reqMsg) {
+  websocketpp::lib::error_code ec;
+  bool retVal = true;
+
+  c->send(hdl, reqMsg, websocketpp::frame::opcode::text, ec);
+
+  if (ec) {
+    bool retVal = false;
+    std::cerr << "Error sending because: " << ec.message() <<  std::endl;
+  }
+
+  return retVal;
+}
+
+std::string
+getMsgIdentify(std::string& authentication,
+	       const int rpcVersion,
+	       bool ignoreInvalidMessage,
+	       EventSubscription eventSubscription) {
+  Json::Value jsonAns;
+  Json::Value jsonAnsData;
+
+  jsonAnsData["rpcVersion"] = rpcVersion;
+  if (authentication != "")
+    jsonAnsData["authentication"] = authentication;
+  jsonAnsData["ignoreInvalidMessages"] = true;
+  jsonAnsData["eventSubscriptions"] = All;
+
+  jsonAns["d"] = jsonAnsData;
+  jsonAns["op"] = Identify;
+
+  Json::StreamWriterBuilder writerBuilder;
+  return Json::writeString(writerBuilder, jsonAns);
+}
+
+std::string
+getMsgRequest(std::string& requestType) {
+  Json::Value jsonAns;
+  Json::Value jsonAnsData;
+
+  jsonAnsData["requestType"] = requestType;
+  jsonAnsData["requestId"] = requestId++;
+
+  jsonAns["d"] = jsonAnsData;
+  jsonAns["op"] = Request;
+
+  Json::StreamWriterBuilder writerBuilder;
+
+  return Json::writeString(writerBuilder, jsonAns);
+}
+
+void on_message(client* c,
+		websocketpp::connection_hdl hdl,
+		message_ptr msg) {
 
   std::cout << "[obscontrol] " << msg->get_payload() << std::endl;
 
@@ -66,7 +124,7 @@ void on_message(client* c, websocketpp::connection_hdl hdl, message_ptr msg) {
 
       if (jsonMsg["d"].isMember("authentication")) {
 	std::string salt(jsonMsg["d"]["authentication"]["salt"].asString());
-	std::string password("abcd1234");
+	std::string password(PASS_1);
 
 	QString passwordAndSalt = "";
 	passwordAndSalt += QString::fromStdString(password);
@@ -88,49 +146,22 @@ void on_message(client* c, websocketpp::connection_hdl hdl, message_ptr msg) {
 	std::string authentication = secretAndChallengeHash.toBase64().toStdString();
 
 	std::cout << authentication << std::endl;
-	Json::Value jsonAns;
-	Json::Value jsonAnsData;
 
-	jsonAnsData["rpcVersion"] = rpcVersion;
-	jsonAnsData["authentication"] = authentication;
-	jsonAnsData["ignoreInvalidMessages"] = true;
-	jsonAnsData["eventSubscriptions"] = All;
+	std::string retMsg = getMsgIdentify(authentication,
+					    rpcVersion,
+					    true,
+					    All);
 
-	jsonAns["d"] = jsonAnsData;
-	jsonAns["op"] = Identify;
-
-	Json::StreamWriterBuilder writerBuilder;
-	std::string retMsg = Json::writeString(writerBuilder, jsonAns);
-
-	websocketpp::lib::error_code ec;
-
-	c->send(hdl, retMsg, msg->get_opcode(), ec);
-
-	if (ec) {
-	  std::cerr << "Error sending because: " << ec.message() <<  std::endl;
-	}
+	sendSimpleRequest(c, hdl, retMsg);
       }
       else {
-	Json::Value jsonAns;
-	Json::Value jsonAnsData;
+	std::string authentication = "";
+	std::string retMsg = getMsgIdentify(authentication,
+					    rpcVersion,
+					    true,
+					    All);
 
-	jsonAnsData["rpcVersion"] = rpcVersion;
-	jsonAnsData["ignoreInvalidMessages"] = true;
-	jsonAnsData["eventSubscriptions"] = All;
-
-	jsonAns["d"] = jsonAnsData;
-	jsonAns["op"] = Identify;
-
-	Json::StreamWriterBuilder writerBuilder;
-	std::string retMsg = Json::writeString(writerBuilder, jsonAns);
-
-	websocketpp::lib::error_code ec;
-
-	c->send(hdl, retMsg, msg->get_opcode(), ec);
-
-	if (ec) {
-	  std::cerr << "Error sending because: " << ec.message() <<  std::endl;
-	}
+	sendSimpleRequest(c, hdl, retMsg);
       }
     }
     break;
@@ -140,78 +171,58 @@ void on_message(client* c, websocketpp::connection_hdl hdl, message_ptr msg) {
     }
     break;
 
-
   case Event:
     {
-      std::cout << jsonMsg["d"]["eventType"].asString() << std::endl;
-      std::cout << jsonMsg["d"]["eventIntent"].asInt() << std::endl;
+    }
+    break;
+
+  case RequestResponse:
+    {
+    }
+    break;
+
+  case RequestBatchResponse:
+    {
     }
     break;
   }
 }
 
-void watchInput(client *c) { // client* c) {
+void watchInput(client *c) {
   bool toRecord = true;
 
   for (;;) {
+
     std::string str;
     std::cin >> str;
+
     if (!std::cin) break;
+
     if (toRecord) {
+
       std::cout << "Recording: " << std::endl;
-      Json::Value jsonAns;
-      Json::Value jsonAnsData;
       std::string requestType = "StartRecord";
-      jsonAnsData["requestType"] = requestType;
-      jsonAnsData["requestId"] = requestId++;
-      jsonAns["d"] = jsonAnsData;
-      jsonAns["op"] = Request;
-      Json::StreamWriterBuilder writerBuilder;
-      std::string retMsg = Json::writeString(writerBuilder, jsonAns);
 
-      websocketpp::lib::error_code ec;
-
-      c->send(global_hdl, retMsg, websocketpp::frame::opcode::text, ec);
-
+      std::string retMsg = getMsgRequest(requestType);
+      sendSimpleRequest(c, global_hdl, retMsg);
     }
     else {
       std::cout << "No recording" << std::endl;
-      Json::Value jsonAns;
-      Json::Value jsonAnsData;
       std::string requestType = "StopRecord";
-      jsonAnsData["requestType"] = requestType;
-      jsonAnsData["requestId"] = requestId++;
-      jsonAns["d"] = jsonAnsData;
-      jsonAns["op"] = Request;
 
-      Json::StreamWriterBuilder writerBuilder;
-      std::string retMsg = Json::writeString(writerBuilder, jsonAns);
-
-      websocketpp::lib::error_code ec;
-
-      c->send(global_hdl, retMsg, websocketpp::frame::opcode::text, ec);
-
+      std::string retMsg = getMsgRequest(requestType);
+      sendSimpleRequest(c, global_hdl, retMsg);
     }
-    
+
     toRecord = !toRecord;
   }
 
   if (toRecord) {
     std::cout << "No recording" << std::endl;
-    Json::Value jsonAns;
-    Json::Value jsonAnsData;
     std::string requestType = "StopRecord";
-    jsonAnsData["requestType"] = requestType;
-    jsonAnsData["requestId"] = requestId++;
-    jsonAns["d"] = jsonAnsData;
-    jsonAns["op"] = Request;
 
-    Json::StreamWriterBuilder writerBuilder;
-    std::string retMsg = Json::writeString(writerBuilder, jsonAns);
-
-    websocketpp::lib::error_code ec;
-
-    c->send(global_hdl, retMsg, websocketpp::frame::opcode::text, ec);
+    std::string retMsg = getMsgRequest(requestType);
+    sendSimpleRequest(c, global_hdl, retMsg);
   }
 
   return;
@@ -220,17 +231,43 @@ void watchInput(client *c) { // client* c) {
 int
 main(int argc, char *argv[]) {
 
+  int pobsout[2];
+  int pobserr[2];
+  ::pipe(pobsout);
+  ::pipe(pobserr);
+  
+  int fdout = ::open("/dev/null", O_WRONLY);
+  int fderr = ::open("/dev/null", O_WRONLY);
+  
   pid_t child = ::fork();
-
+  
   if (child == 0) {
+    ::dup2(pobsout[STDOUT_FILENO], STDOUT_FILENO);
+    ::dup2(fdout, pobsout[STDIN_FILENO]);
+    ::dup2(pobserr[STDOUT_FILENO], STDERR_FILENO);
+    ::dup2(fderr, pobserr[STDIN_FILENO]);
+    ::close(pobsout[STDOUT_FILENO]);
+    ::close(fdout);
+    ::close(pobserr[STDOUT_FILENO]);
+    ::close(fderr);
+
     ::execlp("obs", "obs",
-	     "--scene", "Docente", "--profile", "Docente",
+	     "--scene", "Docente",
+	     "--profile", "Docente",
 	     "--websocket_port", PORT_1,
 	     "--websocket_password", PASS_1,
-	     "--websocket_debug", "true"
+	     // "--websocket_debug", "true"
 	     "--multi", nullptr);
     ::exit(100);
   }
+
+  ::close(fderr);
+  ::close(fdout);
+  ::close(pobsout[STDIN_FILENO]);
+  ::close(pobsout[STDOUT_FILENO]);
+  ::close(pobserr[STDIN_FILENO]);
+  ::close(pobserr[STDOUT_FILENO]);
+
 
   ::sleep(WAIT_TIME);
 
