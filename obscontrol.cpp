@@ -1,13 +1,21 @@
 #include <iostream>
+#include <sstream>
+#include <vector>
 #include <QString>
 #include <QByteArray>
 #include <QCryptographicHash>
 #include <string>
 #include <cstdlib>
+#include <cctype>
 #include <thread>
+#include <termios.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#include <signal.h>
+#include <fcntl.h>
 #include <websocketpp/config/asio_no_tls_client.hpp>
 #include <websocketpp/client.hpp>
 #include <json/json.h>
@@ -22,7 +30,7 @@
 #define PORT_2 "4900"
 #define PASS_2 "1234abcd"
 #define HOSTNAME_2 "localhost"
-#define WAIT_TIME 6
+#define WAIT_TIME 5
 
 typedef websocketpp::client<websocketpp::config::asio_client> client;
 
@@ -32,7 +40,7 @@ using websocketpp::lib::bind;
 
 typedef websocketpp::config::asio_client::message_type::ptr message_ptr;
 
-websocketpp::connection_hdl global_hdl;
+// websocketpp::connection_hdl global_hdl;
 int requestId = 100;
 const std::string localhost { "localhost" };
 const std::string wsproto { "ws" };
@@ -100,16 +108,22 @@ struct OBSConnection {
   std::string pass;
   std::string ipohost;
   std::string proto;
+  std::string scene;
+  std::string profile;
   bool debug;
 
   OBSConnection(std::string& port,
 		std::string& pass,
+		std::string& scene,
+		std::string& profile,
 		const std::string& ipohost = localhost,
 		const std::string& proto = wsproto,
 		bool debug = false) :
     c(),
     port(port),
     pass(pass),
+    scene(scene),
+    profile(profile),
     ipohost(ipohost),
     proto(proto),
     debug(debug) {
@@ -225,6 +239,12 @@ private:
     return ret;
   }
 
+  std::string getDebugStr() const {
+    std::ostringstream oss;
+    oss << debug;
+    return oss.str();
+  }
+
   void run() {
     // int pobsout[2];
     // int pobserr[2];
@@ -252,11 +272,11 @@ private:
 
       // TODO update parameters and creation of this
       ::execlp("obs", "obs",
-	       "--scene", "Docente",
-	       "--profile", "Docente",
+	       "--scene", scene.c_str(),
+	       "--profile", profile.c_str(),
 	       "--websocket_port", port.c_str(),
 	       "--websocket_password", pass.c_str(),
-	       // "--websocket_debug", "false",
+	       "--websocket_debug", getDebugStr().c_str(),
 	       "--multi", nullptr);
       ::exit(100);
     }
@@ -318,161 +338,160 @@ private:
   }
 };
 
-void on_open(websocketpp::connection_hdl hdl) {
-  global_hdl = hdl;
-}
+void watchInput(std::vector<OBSConnection*>& obsCons) {
 
-void on_message(client* c,
-		websocketpp::connection_hdl hdl,
-		message_ptr msg) {
+  struct termios state1, state2;
+  char c;
+  int p;
 
-  std::cout << "[obscontrol] " << msg->get_payload() << std::endl;
-
-  std::string rawJson(msg->get_payload());
-  int rawJsonLength = static_cast<int>(rawJson.length());
-  Json::Value jsonMsg;
-  JSONCPP_STRING err;
-
-  Json::CharReaderBuilder readBuilder;
-  const std::unique_ptr<Json::CharReader> reader(readBuilder.newCharReader());
-
-  if (!reader->parse(rawJson.c_str(),
-		     rawJson.c_str() + rawJsonLength,
-		     &jsonMsg, &err)) {
-
-    std::cerr << "Json Parser: " << msg->get_payload() << std::endl;
-    ::exit(EXIT_FAILURE); // TODO This is too drastic. Mananged it!
+  if (!::isatty(STDOUT_FILENO)) {
+    fprintf(stderr, "Error output is not standard\n");
+    exit(2);
   }
 
-  WebSocketOpCode opCode = static_cast<WebSocketOpCode>(jsonMsg["op"].asInt());
+  ::ioctl(STDOUT_FILENO, TIOCGPGRP, &p);
 
-  switch (opCode) {
-  case Hello:
-    {
-      const int rpcVersion = jsonMsg["d"]["rpcVersion"].asInt();
+  if (::getpgid(STDIN_FILENO) != p) {
+    fprintf(stderr, "Process in background\n");
+    exit(2);
+  }
 
-      if (jsonMsg["d"].isMember("authentication")) {
-	std::string salt(jsonMsg["d"]["authentication"]["salt"].asString());
-	std::string password(PASS_1);
+  if (!::isatty(STDIN_FILENO)) {
+    fprintf(stderr, "Error input is not standard");
+    exit(2);
+  }
 
-	QString passwordAndSalt = "";
-	passwordAndSalt += QString::fromStdString(password);
-	passwordAndSalt += QString::fromStdString(salt);
+  if (::ioctl(STDIN_FILENO, TCGETS, &state1) == -1) {
+    perror("iotcl\n");
+    exit(4);
+  }
 
-	auto passwordAndSaltHash = QCryptographicHash::hash(passwordAndSalt.toUtf8(),
-							    QCryptographicHash::Algorithm::Sha256);
+  state2 = state1;
+  state2.c_cc[VMIN] = 1;
+  state2.c_lflag &= ~(ECHO | ISIG | ICANON);
+  // state2.c_oflag |= OLCUC;
 
-	std::string base64_secret = passwordAndSaltHash.toBase64().toStdString();
-	std::string challenge(jsonMsg["d"]["authentication"]["challenge"].asString());
+  ::ioctl(STDIN_FILENO, TCSETS, &state2);
 
-	QString secretAndChallenge = "";
-	secretAndChallenge += QString::fromStdString(base64_secret);
-	secretAndChallenge += QString::fromStdString(challenge);
+  enum class OBSState { Stopped, Recording };
+  OBSState curr = OBSState::Stopped;
+  std::string requestType;
+  std::string retMsg;
 
-	auto secretAndChallengeHash = QCryptographicHash::hash(secretAndChallenge.toUtf8(),
-							       QCryptographicHash::Algorithm::Sha256);
+  do {
+    ::read(STDIN_FILENO, &c, 1);
 
-	std::string authentication = secretAndChallengeHash.toBase64().toStdString();
+    if (::isblank(c)) {
 
-	std::cout << authentication << std::endl;
-
-	std::string retMsg = getMsgIdentify(authentication,
-					    rpcVersion,
-					    true,
-					    All);
-
-	sendSimpleRequest(c, hdl, retMsg);
+      switch(curr) {
+      case OBSState::Stopped:
+	requestType = "StartRecord";
+	retMsg = getMsgRequest(requestType);
+	curr = OBSState::Recording;
+	break;
+      case OBSState::Recording:
+	requestType = "StopRecord";
+	retMsg = getMsgRequest(requestType);
+	curr = OBSState::Stopped;
+	break;
       }
-      else {
-	std::string authentication = "";
-	std::string retMsg = getMsgIdentify(authentication,
-					    rpcVersion,
-					    true,
-					    All);
 
-	sendSimpleRequest(c, hdl, retMsg);
+      for (auto pObsCon : obsCons) {
+	std::ostringstream oss;
+
+	oss << "Request: "
+	    << requestType
+	    << " to "
+	    << pObsCon->scene
+	    << std::endl;
+
+	sendSimpleRequest(&pObsCon->c,
+			  pObsCon->hdl,
+			  retMsg);
+	std::string msgState = oss.str();
+	::write(STDOUT_FILENO, msgState.c_str(), msgState.size());
       }
     }
-    break;
+  } while (c != state2.c_cc[VINTR] &&
+	   c != state2.c_cc[VQUIT] &&
+	   c != state2.c_cc[VEOF]);
 
-  case Identified:
-    {
+  if (curr == OBSState::Recording) {
+    requestType = "StopRecord";
+    retMsg = getMsgRequest(requestType);
+    curr = OBSState::Stopped;
+   
+    for (auto pObsCon : obsCons) {
+	std::ostringstream oss;
+
+	oss << "Request: "
+	    << requestType
+	    << " to "
+	    << pObsCon->scene
+	    << std::endl;
+
+	sendSimpleRequest(&pObsCon->c,
+			  pObsCon->hdl,
+			  retMsg);
+	std::string msgState = oss.str();
+	::write(STDOUT_FILENO, msgState.c_str(), msgState.size());
     }
-    break;
-
-  case Event:
-    {
-    }
-    break;
-
-  case RequestResponse:
-    {
-    }
-    break;
-
-  case RequestBatchResponse:
-    {
-    }
-    break;
-  }
-}
-
-void watchInput(client *c) {
-  bool toRecord = true;
-
-  for (;;) {
-
-    std::string str;
-    std::cin >> str;
-
-    if (!std::cin) break;
-
-    if (toRecord) {
-
-      std::cout << "Recording: " << std::endl;
-      std::string requestType = "StartRecord";
-
-      std::string retMsg = getMsgRequest(requestType);
-      sendSimpleRequest(c, global_hdl, retMsg);
-    }
-    else {
-      std::cout << "No recording" << std::endl;
-      std::string requestType = "StopRecord";
-
-      std::string retMsg = getMsgRequest(requestType);
-      sendSimpleRequest(c, global_hdl, retMsg);
-    }
-
-    toRecord = !toRecord;
   }
 
-  if (toRecord) {
-    std::cout << "No recording" << std::endl;
-    std::string requestType = "StopRecord";
+  ioctl(STDIN_FILENO, TCSETS, &state1);
+  putchar('\n');
 
-    std::string retMsg = getMsgRequest(requestType);
-    sendSimpleRequest(c, global_hdl, retMsg);
-  }
-
+  for (auto pObsCon : obsCons)
+    kill(pObsCon->child, SIGKILL);
   return;
 }
 
 int
 main(int argc, char *argv[]) {
 
-  std::string port_1 { PORT_1 };
-  std::string pass_1 { PASS_1 };
-  OBSConnection *pObsCon = new OBSConnection(port_1, pass_1);
+  std::string port;
+  std::string pass;
+  std::string scene;
+  std::string profile;
+  port = PORT_1;
+  pass = PASS_1;
+  scene = "Docente";
+  profile = "Docente";
 
+  std::vector<OBSConnection*> obsCons;
 
+  obsCons.push_back(new OBSConnection(port,
+				      pass,
+				      scene,
+				      profile
+				      ));
+  
+  ::sleep(WAIT_TIME);
+
+  port = PORT_2;
+  pass = PASS_2;
+  scene = "Console";
+  profile = "Console";
+
+  obsCons.push_back(new OBSConnection(port,
+				      pass,
+				      scene,
+				      profile
+				      ));
+
+  watchInput(obsCons);
+  
   int status;
 
-  pObsCon->join();
-  ::waitpid(pObsCon->child, &status, 0);
-  //watchThread->join();
+  for (auto pObsCon : obsCons) {
+    pObsCon->join();
+    ::waitpid(pObsCon->child, &status, 0);
+    //watchThread->join();
 
-  std::cout << "[obscontrol] Ending with status: "
-	    << status << std::endl;
+    std::cout << "[obscontrol] Ending obs " << pObsCon->scene
+	      << " with status: "
+	      << status << std::endl;
+  }
 
   return EXIT_SUCCESS;
 }
