@@ -420,7 +420,7 @@ void watchInput(std::vector<OBSConnection*>& obsCons) {
     requestType = "StopRecord";
     retMsg = getMsgRequest(requestType);
     curr = OBSState::Stopped;
-   
+
     for (auto pObsCon : obsCons) {
 	std::ostringstream oss;
 
@@ -446,6 +446,29 @@ void watchInput(std::vector<OBSConnection*>& obsCons) {
   return;
 }
 
+static void
+processOption(int argc, char *argv[]) {
+  bool version = false;
+
+  int c;
+
+  while ((c = getopt(argc, argv, "hv")) != -1) {
+    switch (c) {
+    case 'v':
+      std::cout << "obscontrol version: " << OBSCONTROL_VERSION << std::endl;
+      exit(EXIT_SUCCESS);
+      break;
+
+    case 'h':
+      std::cout << "obscontrol # Running two obs instances" << std::endl;
+      std::cout << "obscontrol -h # Show this message" << std::endl;
+      std::cout << "obscontrol -v # Show the current version" << std::endl;
+      exit(EXIT_SUCCESS);
+      break;
+    }
+  }
+}
+
 int
 main(int argc, char *argv[]) {
 
@@ -465,7 +488,7 @@ main(int argc, char *argv[]) {
 				      scene,
 				      profile
 				      ));
-  
+
   ::sleep(WAIT_TIME);
 
   port = PORT_2;
@@ -480,7 +503,7 @@ main(int argc, char *argv[]) {
 				      ));
 
   watchInput(obsCons);
-  
+
   int status;
 
   for (auto pObsCon : obsCons) {
