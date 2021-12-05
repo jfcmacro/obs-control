@@ -447,7 +447,7 @@ void watchInput(std::vector<OBSConnection*>& obsCons) {
 }
 
 static void
-processOption(int argc, char *argv[]) {
+processOptions(int argc, char *argv[]) {
   bool version = false;
 
   int c;
@@ -472,6 +472,8 @@ processOption(int argc, char *argv[]) {
 int
 main(int argc, char *argv[]) {
 
+  processOptions(argc, argv);
+  
   std::string port;
   std::string pass;
   std::string scene;
