@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(obscontrol VERSION 0.1.0)
+project(obscontrol VERSION 0.1.1)
 
 configure_file(obscontrol.h.in obscontrol.h)
 add_executable(obscontrol obscontrol.cpp obswebsocket.h)
