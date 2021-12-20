@@ -471,7 +471,7 @@ void watchInput(std::vector<OBSConnection*>& obsCons) {
 			retMsg);
       oss << "Stopping " << std::endl;
       std::string msgState = oss.str();
-      
+
       ::write(STDOUT_FILENO, msgState.c_str(), msgState.size());
     }
   }
@@ -520,16 +520,17 @@ main(int argc, char *argv[]) {
   std::string pass;
   std::string scene;
   std::string profile;
-  // port = PORT_1;
-  // pass = PASS_1;
-  // profile = "Consola";
-  // scene = "Consola";
 
-  // obsCons.push_back(new OBSConnection(port,
-  // 				      pass,
-  // 				      profile,
-  // 				      scene
-  // 				      ));
+  port = PORT_1;
+  pass = PASS_1;
+  profile = "Consola";
+  scene = "Consola";
+
+  obsCons.push_back(new OBSConnection(port,
+				      pass,
+				      profile,
+				      scene
+				      ));
 
   // ::sleep(WAIT_TIME);
 
@@ -537,7 +538,7 @@ main(int argc, char *argv[]) {
   pass = "abcd1234";
   profile = default_profile;
   scene = default_scene;
-  std::string host = "192.168.1.107";
+  std::string host = "192.168.1.102";
 
   obsCons.push_back(new OBSConnection(port,
 				      pass,
