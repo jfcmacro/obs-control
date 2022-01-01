@@ -532,7 +532,7 @@ main(int argc, char *argv[]) {
 				      scene
 				      ));
 
-  // ::sleep(WAIT_TIME);
+  ::sleep(WAIT_TIME);
 
   port = "4444";
   pass = "abcd1234";
