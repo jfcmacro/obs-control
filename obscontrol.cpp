@@ -1,5 +1,7 @@
 #include <iostream>
+#include <fstream>
 #include <sstream>
+#include <filesystem>
 #include <vector>
 #include <QString>
 #include <QByteArray>
@@ -20,6 +22,7 @@
 #include <websocketpp/config/asio_no_tls_client.hpp>
 #include <websocketpp/client.hpp>
 #include <json/json.h>
+#include <getopt.h>
 #include <openssl/sha.h>
 #include <utf8.h>
 #include "obscontrol.h"
@@ -487,87 +490,185 @@ void watchInput(std::vector<OBSConnection*>& obsCons) {
 }
 
 static void
-processOptions(int argc, char *argv[]) {
+processOptions(int argc, char *argv[],
+	       std::string& cfilename) {
   bool version = false;
 
-  int c;
+  static struct option long_options[] = {
+    {"config", 1, 0, 'c'},
+    {"help", 0, 0, 'h'},
+    {"version", 0, 0, 'v'},
+    {0, 0, 0, 0}
+  };
 
-  while ((c = getopt(argc, argv, "hv")) != -1) {
+  int c;
+  int option_index;
+
+  while ((c = getopt_long(argc, argv, "c:hv",
+			  long_options, &option_index)) != -1) {
     switch (c) {
+    case 'c':
+      cfilename.clear();
+      cfilename += optarg;
+      break;
+
     case 'v':
-      std::cout << "obscontrol version: " << OBSCONTROL_VERSION << std::endl;
+      std::cout << "obscontrol version: "
+		<< OBSCONTROL_VERSION
+		<< std::endl;
       exit(EXIT_SUCCESS);
       break;
 
     case 'h':
-      std::cout << "obscontrol # Running two obs instances" << std::endl;
-      std::cout << "obscontrol -h # Show this message" << std::endl;
-      std::cout << "obscontrol -v # Show the current version" << std::endl;
+      std::cout << "obscontrol [(-c|--config) <config-path-name>]"
+		<<  " # control several obs instances" << std::endl;
+      std::cout << "obscontrol (-h|--help) # Show this message"
+		<< std::endl;
+      std::cout << "obscontrol (-v|--version) # Show the current version"
+		<< std::endl;
       exit(EXIT_SUCCESS);
       break;
     }
   }
 }
 
+bool
+readingConfigFile(const std::string &configName, Json::Value &config) {
+
+  std::ifstream cf(configName);
+
+  if (!cf) return false;
+
+  cf >> config;
+  return true;
+}
+
+void
+testDefaultConfigFile(std::string& defaultConfigFile) {
+
+  std::ifstream cf(defaultConfigFile);
+
+  if (!cf) {
+    cf.close();
+    std::filesystem::path configPath { ::getenv("HOME") };
+
+    configPath /= ".config";
+    configPath /= "obscontrol";
+
+    if (!std::filesystem::exists(configPath)) create_directory(configPath);
+
+    std::ofstream ocf(defaultConfigFile);
+
+    Json::Value jarray(Json::arrayValue);
+    Json::Value root(Json::objectValue);
+    Json::Value values(Json::objectValue);
+
+    values["enable"] = true;
+    values["address"] = "127.0.0.1";
+    values["port"] = "4444";
+    values["password"] = "abcd1234";
+    values["init_profile"] = "default_profile";
+    values["init_scene"] = "default_scene";
+
+    root["default"] = values;
+    jarray[0] = root;
+
+    ocf << jarray << std::endl;
+  }
+  else {
+    cf.close();
+  }
+}
+
 int
 main(int argc, char *argv[]) {
 
-  processOptions(argc, argv);
+  std::string defaultConfigFile = { ::getenv("HOME") };
+  defaultConfigFile += "/.config/obscontrol/config.json";
 
-  std::vector<OBSConnection*> obsCons;
+  testDefaultConfigFile(defaultConfigFile);
 
-  std::string port;
-  std::string pass;
-  std::string scene;
-  std::string profile;
+  // ::exit(EXIT_SUCCESS);
 
-  port = PORT_1;
-  pass = PASS_1;
-  profile = "Consola";
-  scene = "Consola";
+  std::string configFile { defaultConfigFile };
 
-  obsCons.push_back(new OBSConnection(port,
-				      pass,
-				      profile,
-				      scene
-				      ));
+  processOptions(argc, argv, configFile);
+  Json::Value config;
 
-  ::sleep(WAIT_TIME);
+  if (readingConfigFile(configFile, config)) {
 
-  port = "4444";
-  pass = "abcd1234";
-  profile = default_profile;
-  scene = default_scene;
-  std::string host = "192.168.1.102";
+    std::vector<OBSConnection*> obsCons;
 
-  obsCons.push_back(new OBSConnection(port,
-				      pass,
-				      profile,
-				      scene,
-				      host,
-				      false
-				      ));
+    for (Json::Value v : config) {
+      std::string remoteOBSName { v.getMemberNames()[0] };
 
-  watchInput(obsCons);
+      if (v[remoteOBSName]["enable"].asBool()) {
+	std::string port    { v[remoteOBSName]["port"].asString() };
+	std::string pass    { v[remoteOBSName]["password"].asString() } ;
+	std::string profile { v[remoteOBSName]["init_scene"].asString() };
+	std::string scene   { v[remoteOBSName]["init_scene"].asString() };
+	std::string host    { v[remoteOBSName]["address"].asString() };
 
-  int status;
+	if (!v[remoteOBSName]["local"].isNull()) {
 
-  for (auto pObsCon : obsCons) {
-    pObsCon->join();
-    if (pObsCon->runProcess and pObsCon->child == -1) {
-      ::waitpid(pObsCon->child, &status, 0);
-    //watchThread->join();
+	  if (v[remoteOBSName]["local"]["launch"].asBool()) {
+	    obsCons.push_back(new OBSConnection(port,
+						pass,
+						profile,
+						scene
+						));
+	  }
+	  else {
+	    obsCons.push_back(new OBSConnection(port,
+						pass,
+						profile,
+						scene,
+						host,
+						false
+						));
+	  }
 
-      std::cout << "[obscontrol] Ending obs "
-		<< pObsCon->scene
-		<< " with status: "
-		<< status << std::endl;
+	  ::sleep(WAIT_TIME);
+	}
+	else {
+
+	  obsCons.push_back(new OBSConnection(port,
+					      pass,
+					      profile,
+					      scene,
+					      host,
+					      false
+					      ));
+	}
+      }
     }
-    else {
-      std::cout << "[obscontrol] Ending obs "
-		<< pObsCon->scene
-		<< std::endl;
+
+    watchInput(obsCons);
+
+    int status;
+
+    for (auto pObsCon : obsCons) {
+      pObsCon->join();
+      if (pObsCon->runProcess and pObsCon->child == -1) {
+	::waitpid(pObsCon->child, &status, 0);
+	//watchThread->join();
+
+	std::cout << "[obscontrol] Ending obs "
+		  << pObsCon->scene
+		  << " with status: "
+		  << status << std::endl;
+      }
+      else {
+	std::cout << "[obscontrol] Ending obs "
+		  << pObsCon->scene
+		  << std::endl;
+      }
     }
+  }
+  else {
+    std::cerr << "Cannot open configuration file"
+	      << std::endl;
+    return EXIT_FAILURE;
   }
 
   return EXIT_SUCCESS;
